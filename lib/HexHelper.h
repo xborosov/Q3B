@@ -1,6 +1,8 @@
 #ifndef HEXHELPER_H
 #define HEXHELPER_H
 
+#include <sstream>
+
 class HexHelper
 {
 private:

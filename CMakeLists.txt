@@ -18,6 +18,8 @@ file(GLOB Q3B_SRC
     "lib/cudd/bvec_cudd.cpp"
     "lib/maybeBdd/maybeBdd.h"
     "lib/maybeBdd/maybeBdd.cpp"
+    "lib/simplificationPasses/*.h"
+    "lib/simplificationPasses/*.cpp"
     )
 
 SET(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
@@ -26,20 +28,21 @@ set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall")
 
-find_library(LibZ3 z3 PATHS /usr/lib DOC "z3 library")
+set(Z3_DIR "contrib/z3/build" CACHE STRING "Path in which Z3 has been built")
+set(CUDD_DIR "contrib/cudd" CACHE STRING "Path in which CUDD has been built")
+set(ANTLR_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/contrib/antlr/antlr-4.11.1-complete.jar" CACHE STRING "Path to ANTLR executable")
 
-if(NOT LibZ3)
-  message(FATAL_ERROR "Library libz3 required, but not found!")
-endif(NOT LibZ3)
+find_package(Z3 CONFIG)
+set(LIBS ${LIBS} ${Z3_LIBRARIES})
+include_directories(${Z3_CXX_INCLUDE_DIRS})
 
-set(LIBS ${LIBS} ${LibZ3})
-
-find_library(LibCUDD cudd PATHS /usr/local/lib DOC "bdd library")
-if(NOT LibCUDD)
-  message(FATAL_ERROR "Library libcudd required, but not found!")
-endif(NOT LibCUDD)
-
+find_library(LibCUDD cudd
+  HINTS ${CUDD_DIR}/cudd/.libs
+  DOC "CUDD library"
+  REQUIRED
+)
 set(LIBS ${LIBS} ${LibCUDD})
+include_directories(${CUDD_DIR}/cudd ${CUDD_DIR}/cplusplus)
 
 find_package(OpenMP)
 if (OPENMP_FOUND)
@@ -57,7 +60,7 @@ set(ANTLR4_WITH_STATIC_CRT OFF)
 # add external build for antlrcpp
 include(ExternalAntlr4Cpp)
 # add antrl4cpp artifacts to project environment
-include_directories(${ANTLR4_INCLUDE_DIRS})
+include_directories(SYSTEM ${ANTLR4_INCLUDE_DIRS})
 
 find_package(ANTLR REQUIRED)
 
@@ -65,7 +68,7 @@ find_package(ANTLR REQUIRED)
 antlr_target(SmtLibParser parser/smtlibv2-grammar/src/main/resources/SMTLIBv2.g4 VISITOR)
 
 # include generated files in project environment
-include_directories(${ANTLR_SmtLibParser_OUTPUT_DIR})
+include_directories(SYSTEM ${ANTLR_SmtLibParser_OUTPUT_DIR})
 
 add_library(q3blib ${Q3B_SRC} ${ANTLR_SmtLibParser_CXX_OUTPUTS})
 target_link_libraries(q3blib ${CMAKE_THREAD_LIBS_INIT})

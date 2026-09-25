@@ -1,7 +1,6 @@
 #include "ExprToBDDTransformer.h"
 #include <cmath>
 #include <iostream>
-#include <sstream>
 #include <list>
 #include <algorithm>
 
@@ -18,6 +17,7 @@ using namespace std::placeholders;
 ExprToBDDTransformer::ExprToBDDTransformer(z3::context &ctx, z3::expr e, Config config) : config(config), expression(e)
 {
     this->context = &ctx;
+    configureReorder();
     configureTermination();
 
     loadVars();
@@ -55,8 +55,9 @@ void ExprToBDDTransformer::getVars(const z3::expr &e)
             return;
         }
 
-        int bitWidth = e.get_sort().is_bool() ? 1 : e.get_sort().bv_size();
-        constSet.insert(make_pair(expressionString, bitWidth));
+	int bitWidth = e.get_sort().is_bool() ? 1 : e.get_sort().bv_size();
+	constSet.insert(make_pair(expressionString, bitWidth));
+	varSorts.emplace(expressionString, e.get_sort());
     }
     else if (e.is_app())
     {
@@ -82,9 +83,10 @@ void ExprToBDDTransformer::getVars(const z3::expr &e)
             symbol current_symbol(*context, z3_symbol);
             z3::sort current_sort(*context, z3_sort);
 
-            std::unique_lock<std::mutex> lk(Solver::m_z3context);
-            var c = make_pair(current_symbol.str(), current_sort.is_bool() ? 1 : current_sort.bv_size());
-            boundVarSet.insert(c);
+	    std::unique_lock<std::mutex> lk(Solver::m_z3context);
+	    var c = make_pair(current_symbol.str(), current_sort.is_bool() ? 1 : current_sort.bv_size());
+	    boundVarSet.insert(c);
+	    varSorts.emplace(current_symbol.str(), e.get_sort());
         }
 
         getVars(e.body());
@@ -108,15 +110,7 @@ void ExprToBDDTransformer::loadVars()
     }
 
     VariableOrderer orderer(allVars, *context);
-
-    if (config.initialOrder == HEURISTIC)
-    {
-        orderer.OrderFor(expression);
-    }
-    else if (config.initialOrder == INTERLEAVE_ALL)
-    {
-        orderer.MergeAll();
-    }
+    orderer.OrderFor(expression);
 
     vector<list<var>> orderedGroups = orderer.GetOrdered();
 
@@ -249,7 +243,6 @@ bool ExprToBDDTransformer::correctBoundVars(const std::vector<boundVar> &boundVa
 
 BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& boundVars, bool onlyExistentials, bool precise)
 {
-    if (Solver::resultComputed) return bddManager.bddZero();
     assert(e.is_bool());
 
     auto caches = {bddExprCache, preciseBdds, sameBWPreciseBdds};
@@ -386,8 +379,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
 
             auto arg0 = getBvecFromExpr(e.arg(0), boundVars, precise).value;
             auto arg1 = getBvecFromExpr(e.arg(1), boundVars, precise).value;
-
-            if (Solver::resultComputed) return bddManager.bddZero();
   
             auto result = (config.reduceBdds && !precise)
                 ? Bvec::bvec_lte_reduced(arg0, arg1, config.traverseHeu, nodeLimit)
@@ -400,8 +391,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
 
             auto arg0 = getBvecFromExpr(e.arg(0), boundVars, precise).value;
             auto arg1 = getBvecFromExpr(e.arg(1), boundVars, precise).value;
-
-            if (Solver::resultComputed) return bddManager.bddZero();
  
             auto result = (config.reduceBdds && !precise)
                 ? Bvec::bvec_lth_reduced(arg0, arg1, config.traverseHeu, nodeLimit)
@@ -415,8 +404,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
             auto arg0 = getBvecFromExpr(e.arg(0), boundVars, precise).value;
             auto arg1 = getBvecFromExpr(e.arg(1), boundVars, precise).value;
 
-            if (Solver::resultComputed) return bddManager.bddZero();
- 
             auto result = (config.reduceBdds && !precise)
                 ? Bvec::bvec_lte_reduced(arg1, arg0, config.traverseHeu, nodeLimit)
                 : Bvec::bvec_lte(arg1, arg0, precise);
@@ -428,8 +415,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
 
             auto arg0 = getBvecFromExpr(e.arg(0), boundVars, precise).value;
             auto arg1 = getBvecFromExpr(e.arg(1), boundVars, precise).value;
-
-            if (Solver::resultComputed) return bddManager.bddZero();
 
             auto result = (config.reduceBdds && !precise)
                 ? Bvec::bvec_lth_reduced(arg1, arg0, config.traverseHeu, nodeLimit)
@@ -443,7 +428,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
             BDD result;
             auto arg0 = getBvecFromExpr(e.arg(0), boundVars, precise).value;
             auto arg1 = getBvecFromExpr(e.arg(1), boundVars, precise).value;
-            if (Solver::resultComputed) return bddManager.bddZero();
 
 	    if (config.approximationMethod == OPERATIONS || config.approximationMethod == BOTH)
 	    {
@@ -477,7 +461,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
             BDD result;
             auto arg0 = getBvecFromExpr(e.arg(0), boundVars, precise).value;
             auto arg1 = getBvecFromExpr(e.arg(1), boundVars, precise).value;
-            if (Solver::resultComputed) return bddManager.bddZero();
             
             if (config.approximationMethod == OPERATIONS || config.approximationMethod == BOTH)
 	    {
@@ -511,7 +494,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
             auto arg0 = getBDDFromExpr(e.arg(0), boundVars, false, precise);
             auto arg1 = getBDDFromExpr(e.arg(1), boundVars, false, precise);
 
-            if (Solver::resultComputed) return bddManager.bddZero();
             auto result = precise 
                 ? arg0.XnorP(arg1)
                 : config.reduceBdds
@@ -527,7 +509,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
             auto arg1 = getBDDFromExpr(e.arg(1), boundVars, onlyExistentials, precise);
             auto arg2 = getBDDFromExpr(e.arg(2), boundVars, onlyExistentials, precise);
 
-            if (Solver::resultComputed) return bddManager.bddZero();
             auto result = precise 
                 ? arg0.IteP(arg1, arg2)
                 : config.reduceBdds
@@ -613,7 +594,6 @@ BDD ExprToBDDTransformer::getBDDFromExpr(const expr &e, const vector<boundVar>& 
 
         for (int i = boundVariables - 1; i >= 0; i--)
         {
-            if (Solver::resultComputed) return bddManager.bddZero();
             Z3_symbol z3_symbol = Z3_get_quantifier_bound_name(*context, ast, i);
             symbol current_symbol(*context, z3_symbol);
 
@@ -687,7 +667,6 @@ Approximated<Bvec> ExprToBDDTransformer::getApproximatedVariable(const std::stri
 Approximated<Bvec> ExprToBDDTransformer::getBvecFromExpr(const expr &e, const vector<boundVar>& boundVars, bool precise)
 {
     assert(e.is_bv());
-    if (Solver::resultComputed) return {Bvec::bvec_con(bddManager, e.get_sort().bv_size(), 0), APPROXIMATED};
 
     auto caches = {bvecExprCache, preciseBvecs, sameBWPreciseBvecs};
     for (const auto& cache : caches)
@@ -1197,7 +1176,6 @@ Bvec ExprToBDDTransformer::bvec_mul(Bvec &arg0, Bvec& arg1, bool precise)
 
 Approximated<Bvec> ExprToBDDTransformer::bvec_assocOp(const z3::expr& e, const std::function<Bvec(Bvec, Bvec)>& op, const std::vector<boundVar>& boundVars, bool precise)
 {
-    if (Solver::resultComputed) return {Bvec::bvec_con(bddManager, e.get_sort().bv_size(), 0), APPROXIMATED, APPROXIMATED};
     unsigned num = e.num_args();
     auto toReturn = getBvecFromExpr(e.arg(0), boundVars, precise);
     for (unsigned int i = 1; i < num; i++)
@@ -1210,7 +1188,6 @@ Approximated<Bvec> ExprToBDDTransformer::bvec_assocOp(const z3::expr& e, const s
 
 Approximated<Bvec> ExprToBDDTransformer::bvec_binOp(const z3::expr& e, const std::function<Bvec(Bvec, Bvec)>& op, const std::vector<boundVar>& boundVars, bool precise)
 {
-    if (Solver::resultComputed) return {Bvec::bvec_con(bddManager, e.get_sort().bv_size(), 0), APPROXIMATED, APPROXIMATED};
     auto result = getBvecFromExpr(e.arg(0), boundVars, precise).Apply2<Bvec>(
             getBvecFromExpr(e.arg(1), boundVars, precise),
             op);
@@ -1220,18 +1197,17 @@ Approximated<Bvec> ExprToBDDTransformer::bvec_binOp(const z3::expr& e, const std
 
 Approximated<Bvec> ExprToBDDTransformer::bvec_unOp(const z3::expr& e, const std::function<Bvec(Bvec)>& op, const std::vector<boundVar>& boundVars, bool precise)
 {
-    if (Solver::resultComputed) return {Bvec::bvec_con(bddManager, e.get_sort().bv_size(), 0), APPROXIMATED, APPROXIMATED};
     auto result = getBvecFromExpr(e.arg(0), boundVars, precise).Apply<Bvec>(op);
 
     return insertIntoCaches(e, result, boundVars);
 }
 
-map<string, vector<bool>> ExprToBDDTransformer::GetModel(BDD modelBdd, BDDType type)
+Model ExprToBDDTransformer::GetModel(BDD modelBdd, BDDType type)
 {
-    std::map<std::string, std::vector<bool>> model;
+    Model model;
     std::vector<BDD> modelVars;
 
-    for (const auto& [name, bw] : constSet)
+    for (const auto &[name, bw] : constSet)
     {
         auto varBvec = vars.at(name);
         for (int i = bw - 1; i >= 0; i--)
@@ -1257,32 +1233,37 @@ map<string, vector<bool>> ExprToBDDTransformer::GetModel(BDD modelBdd, BDDType t
             break;
     }
 
-    for (const auto& [name, bw] : constSet)
+    for (const auto &[name, bw] : constSet)
     {
         vector<bool> modelBV(bw);
 
-        auto varBvec = vars.at(name);
-        for (int i = 0; i < bw; i++)
-        {
-            if ((modelBdd & !varBvec[i]).IsZero())
-            {
-                modelBV[bw - i - 1] = true;
-                modelBdd &= varBvec[i];
-            }
-            else
-            {
-                modelBV[bw - i - 1] = false;
-                modelBdd &= !varBvec[i];
-            }
-        }
+	const auto &[varBvec, _opPrecise, _varPrecise] = getApproximatedVariable(name, variableBitWidth, approximationType);
+	for (int i = 0; i < bw; i++)
+	{
+	    if ((modelBdd & !varBvec[i]).IsZero())
+	    {
+		modelBV[bw - i - 1] = true;
+		modelBdd &= varBvec[i];
+	    }
+	    else
+	    {
+		modelBV[bw - i - 1] = false;
+		modelBdd &= !varBvec[i];
+	    }
+	}
 
-        model.insert({name, modelBV});
+	const auto varSort = varSorts.find(name)->second;
+	if (varSort.is_bool()) {
+	    model.insert({name, modelBV[0]});
+	} else {
+	    model.insert({name, modelBV});
+	}
     }
 
     return model;
 }
 
-void ExprToBDDTransformer::PrintModel(const map<string, vector<bool>>& model)
+void ExprToBDDTransformer::PrintModel(const std::map<string, vector<bool>>& model)
 {
     std::cout << "Model: " << std::endl;
     std::cout << "---" << std::endl;
@@ -1349,7 +1330,6 @@ void ExprToBDDTransformer::PrintNecessaryValues(BDD bdd)
 
 Approximated<Bvec> ExprToBDDTransformer::insertIntoCaches(const z3::expr& expr, const Approximated<Bvec>& bvec, const std::vector<boundVar>& boundVars)
 {
-    if (Solver::resultComputed) return {Bvec::bvec_con(bddManager, expr.get_sort().bv_size(), 0), APPROXIMATED, APPROXIMATED};
     bvecExprCache.insert({(Z3_ast)expr, {bvec, boundVars}});
 
     if (bvec.value.isPrecise())
@@ -1362,7 +1342,6 @@ Approximated<Bvec> ExprToBDDTransformer::insertIntoCaches(const z3::expr& expr, 
 
 BDD ExprToBDDTransformer::insertIntoCaches(const z3::expr& expr, const BDD& bdd, const std::vector<boundVar>& boundVars)
 {
-    if (Solver::resultComputed) return bddManager.bddZero();
     bddExprCache.insert({(Z3_ast)expr, {bdd, boundVars}});
 
     if (bdd.IsPrecise())

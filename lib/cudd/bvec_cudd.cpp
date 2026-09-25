@@ -71,7 +71,7 @@ namespace cudd {
     }
 
     Bvec
-    Bvec::bvec_con(Cudd& manager, size_t bitnum, int val) {
+    Bvec::bvec_con(Cudd& manager, size_t bitnum, unsigned int val) {
         Bvec res = reserve(manager, bitnum);
         if (val < 0) {
             throw std::logic_error("use bvec_ncon for negative values");
@@ -194,6 +194,11 @@ namespace cudd {
         if (left.bitnum() == 0 || right.bitnum() == 0 || left.bitnum() != right.bitnum())
         {
             return res;
+        }
+
+        if (left.supportSize() > right.supportSize()) {
+            return bvec_add_nodeLimit(right, left, precise, nodeLimit);
+            //left.swap(right); does not work due to that left and right are const
         }
 
         reserve(res, left.bitnum());
@@ -340,6 +345,11 @@ namespace cudd {
         Bvec leftshifttmp = Bvec(left);
         Bvec leftshift = leftshifttmp.bvec_coerce(bitnum);
 
+        if (left.supportSize() > right.supportSize()) {
+            return bvec_mul_nodeLimit(right, left, precise, nodeLimit);
+            //left.swap(right); does not work due to that left and right are const
+        }
+
 	unsigned int preciseBdds = 0;
         for (size_t i = 0U; i < right.bitnum(); ++i) {
 	    if (right[i].IsZero())
@@ -462,7 +472,7 @@ namespace cudd {
             Bvec tmpremainder = tmp.bvec_shlfixed(1, m_bitvec[bitnum() - 1]);
             Bvec res = bvec_shlfixed(1, m_manager->bddZero());
 
-            bvec_div_rec(divisor, tmpremainder, result, divisor.bitnum(), precise);
+            bvec_div_rec(divisor, tmpremainder, res, divisor.bitnum(), precise);
             Bvec remainder = tmpremainder.bvec_shrfixed(1, m_manager->bddZero());
 
             result = res;

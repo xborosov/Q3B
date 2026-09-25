@@ -1,13 +1,17 @@
-#include "ExprSimplifier.h"
-#include "UnconstrainedVariableSimplifier.h"
 #include <string>
 #include <sstream>
-#include <numeric>
 #include <iostream>
 
-using namespace z3;
+#include "ExprSimplifier.h"
+#include "Model.h"
+#include "UnconstrainedVariableSimplifier.h"
+#include "simplificationPasses/EqualityPropagator.h"
+#include "simplificationPasses/PureLiteralEliminator.h"
+
 
 #define DEBUG false
+
+using namespace z3;
 
 expr ExprSimplifier::Simplify(expr expression)
 {
@@ -18,6 +22,8 @@ expr ExprSimplifier::Simplify(expr expression)
     }
 
     expression = expression.simplify();
+    expression = CanonizeBoundVariables(expression);
+    expression = StripToplevelExistentials(expression);
 
     std::set<unsigned> seen;
     while (seen.find(expression.hash()) == seen.end())
@@ -31,12 +37,16 @@ expr ExprSimplifier::Simplify(expr expression)
 	clearCaches();
 
 	expression = PushQuantifierIrrelevantSubformulas(expression);
-        if (!produceModels)
-        {
-            expression = ApplyConstantEqualities(expression);
-        }
+
+	auto eqPropagator = std::make_unique<EqualityPropagator>(*context);
+	expression = eqPropagator->Apply(expression);
+	usedPasses.push_back(std::move(eqPropagator));
+
 	expression = expression.simplify();
-	expression = EliminatePureLiterals(expression);
+
+	auto plEliminator = std::make_unique<PureLiteralEliminator>(*context);
+	expression = plEliminator->Apply(expression);
+	usedPasses.push_back(std::move(plEliminator));
 
 	for (int i = 0; i < 4; i++)
 	{
@@ -60,17 +70,15 @@ expr ExprSimplifier::Simplify(expr expression)
 	if (propagateUnconstrained && !produceModels)
 	{
 	    expression = expression.simplify();
-	    expression = CanonizeBoundVariables(expression);
 
-	    UnconstrainedVariableSimplifier unconstrainedSimplifier(*context, expression);
-	    unconstrainedSimplifier.SetCountVariablesLocally(true);
-	    unconstrainedSimplifier.SetMulReplacementMode(MASK);
-	    unconstrainedSimplifier.SetDagCounting(true);
-            unconstrainedSimplifier.SetGoalUnconstrained(goalUnconstrained);
+	    auto unconstrainedSimplifier = std::make_unique<UnconstrainedVariableSimplifier>(*context, expression);
+	    unconstrainedSimplifier->SetDagCounting(false);
+            unconstrainedSimplifier->SetGoalUnconstrained(goalUnconstrained);
+	    // TODO: Refactor (martin)
+	    unconstrainedSimplifier->SimplifyIte();
+	    expression = unconstrainedSimplifier->GetExpr();
 
-	    unconstrainedSimplifier.SimplifyIte();
-	    expression = unconstrainedSimplifier.GetExpr();
-            expression = DeCanonizeBoundVariables(expression).simplify();
+	    usedPasses.push_back(std::move(unconstrainedSimplifier));
 	}
     }
 
@@ -89,51 +97,9 @@ expr ExprSimplifier::Simplify(expr expression)
     return expression;
 }
 
-expr ExprSimplifier::ApplyConstantEqualities(const expr &e)
-{
-    if (e.is_app())
-    {
-        func_decl dec = e.decl();
-
-        if (dec.name().str() == "and")
-        {
-            int argsCount = e.num_args();
-
-            for (int i=0; i < argsCount; i++)
-            {
-                expr variable(*context);
-                expr replacement(*context);
-                if (getSubstitutableEquality(e.arg(i), &variable, &replacement))
-                {
-                    Z3_ast args [argsCount-1];
-
-                    for (int j=0; j < argsCount-1; j++)
-                    {
-			args[j] = j < i ? (Z3_ast)e.arg(j) : (Z3_ast)e.arg(j+1);
-		    }
-
-                    expr withoutSubstitutedEquality = to_expr(*context, Z3_mk_and(*context, argsCount - 1, args));
-
-                    expr_vector src(*context);
-                    expr_vector dst(*context);
-
-                    src.push_back(variable);
-                    dst.push_back(replacement);
-
-                    expr substituted = withoutSubstitutedEquality.substitute(src, dst);
-
-                    return ApplyConstantEqualities(substituted);
-                }
-            }
-        }
-    }
-
-    return e;
-}
-
 expr ExprSimplifier::PushQuantifierIrrelevantSubformulas(const expr &e)
 {
-    auto item = pushIrrelevantCache.find((Z3_ast)e);
+    auto item = pushIrrelevantCache.find(e);
     if (item != pushIrrelevantCache.end())
     {
         return item->second;
@@ -156,7 +122,7 @@ expr ExprSimplifier::PushQuantifierIrrelevantSubformulas(const expr &e)
         }
 
         expr result = dec(arguments);
-        pushIrrelevantCache.insert({(Z3_ast)e, result});
+        pushIrrelevantCache.insert({e, result});
         return result;
     }
     else if (e.is_quantifier())
@@ -192,13 +158,13 @@ expr ExprSimplifier::PushQuantifierIrrelevantSubformulas(const expr &e)
                 replacementVector.push_back(modifyQuantifierBody(e, PushQuantifierIrrelevantSubformulas(bodyExpr)));
 
 		expr result = innerDecl(replacementVector);
-                pushIrrelevantCache.insert({(Z3_ast)e, result});
+                pushIrrelevantCache.insert({e, result});
                 return result;
             }
         }
 
 	expr result = modifyQuantifierBody(e, PushQuantifierIrrelevantSubformulas(e.body()));
-        pushIrrelevantCache.insert({(Z3_ast)e, result});
+        pushIrrelevantCache.insert({e, result});
 
         return result;
     }
@@ -210,7 +176,7 @@ expr ExprSimplifier::PushQuantifierIrrelevantSubformulas(const expr &e)
 
 expr ExprSimplifier::RefinedPushQuantifierIrrelevantSubformulas(const expr &e)
 {
-    auto item = refinedPushIrrelevantCache.find((Z3_ast)e);
+    auto item = refinedPushIrrelevantCache.find(e);
     if (item != refinedPushIrrelevantCache.end())
     {
         return item->second;
@@ -306,7 +272,7 @@ expr ExprSimplifier::RefinedPushQuantifierIrrelevantSubformulas(const expr &e)
                 if (numBound == 1)
                 {
                     expr result = outerBody;
-                    refinedPushIrrelevantCache.insert({(Z3_ast)e, result});
+                    refinedPushIrrelevantCache.insert({e, result});
                     return result;
                 }
                 else
@@ -324,14 +290,14 @@ expr ExprSimplifier::RefinedPushQuantifierIrrelevantSubformulas(const expr &e)
 
                     expr result = to_expr(*context, outerQuantAst);
 		    refinedPushIrrelevantCache.clear();
-                    refinedPushIrrelevantCache.insert({(Z3_ast)e, result});
+                    refinedPushIrrelevantCache.insert({e, result});
                     return result;
                 }
             }
         }
 
 	expr result = modifyQuantifierBody(e, RefinedPushQuantifierIrrelevantSubformulas(e.body()));
-	refinedPushIrrelevantCache.insert({(Z3_ast)e, result});
+	refinedPushIrrelevantCache.insert({e, result});
         return result;
     }
     else
@@ -340,67 +306,9 @@ expr ExprSimplifier::RefinedPushQuantifierIrrelevantSubformulas(const expr &e)
     }
 }
 
-bool ExprSimplifier::getSubstitutableEquality(const expr &e, expr *variable, expr *replacement)
-{
-    if (e.is_app())
-    {
-        func_decl dec = e.decl();
-
-        if (dec.decl_kind() == Z3_OP_EQ)
-        {
-            expr firstArg = e.arg(0);
-            if (firstArg.is_app() && firstArg.num_args() == 0 && firstArg.decl().name() != NULL && firstArg.is_bv() && !firstArg.is_numeral())
-            {
-		std::stringstream variableString;
-		variableString << firstArg;
-		std::stringstream replacementString;
-		replacementString << e.arg(1);
-
-		if (replacementString.str().find(variableString.str()) == std::string::npos)
-		{
-		    *variable = firstArg;
-		    *replacement = e.arg(1);
-		    return true;
-		}
-            }
-
-	    expr secondArg = e.arg(1);
-	    if (secondArg.is_app() && secondArg.num_args() == 0 && secondArg.decl().name() != NULL && secondArg.is_bv() && !secondArg.is_numeral())
-            {
-		std::stringstream variableString;
-		variableString << secondArg;
-		std::stringstream replacementString;
-		replacementString << e.arg(0);
-
-		if (replacementString.str().find(variableString.str()) == std::string::npos)
-		{
-		    *variable = secondArg;
-		    *replacement = e.arg(0);
-		    return true;
-		}
-            }
-        }
-	else if (dec.decl_kind() == Z3_OP_NOT && isVar(e.arg(0)))
-	{
-	    *variable = e.arg(0);
-	    *replacement = context->bool_val(false);
-	    return true;
-	}
-    }
-
-    if (isVar(e) && e.is_bool())
-    {
-    	*variable = e;
-    	*replacement = context->bool_val(true);
-    	return true;
-    }
-
-    return false;
-}
-
 expr ExprSimplifier::decreaseDeBruijnIndices(const expr &e, int decreaseBy, int leastIndexToDecrease)
 {
-    auto item = decreaseDeBruijnCache.find(std::make_tuple((Z3_ast)e, decreaseBy, leastIndexToDecrease));
+    auto item = decreaseDeBruijnCache.find(std::make_tuple(e, decreaseBy, leastIndexToDecrease));
     if (item != decreaseDeBruijnCache.end())
     {
         return item->second;
@@ -432,7 +340,7 @@ expr ExprSimplifier::decreaseDeBruijnIndices(const expr &e, int decreaseBy, int 
         }
 
         expr result = dec(arguments);
-        decreaseDeBruijnCache.insert({std::make_tuple((Z3_ast)e, decreaseBy, leastIndexToDecrease), result});
+        decreaseDeBruijnCache.insert({std::make_tuple(e, decreaseBy, leastIndexToDecrease), result});
         return result;
 
     }
@@ -442,7 +350,7 @@ expr ExprSimplifier::decreaseDeBruijnIndices(const expr &e, int decreaseBy, int 
         int numBound = Z3_get_quantifier_num_bound(*context, ast);
 
 	expr result = modifyQuantifierBody(e, decreaseDeBruijnIndices(e.body(), decreaseBy, leastIndexToDecrease + numBound));
-        decreaseDeBruijnCache.insert({std::make_tuple((Z3_ast)e, decreaseBy, leastIndexToDecrease), result});
+        decreaseDeBruijnCache.insert({std::make_tuple(e, decreaseBy, leastIndexToDecrease), result});
         return result;
     }
     else
@@ -465,7 +373,7 @@ expr ExprSimplifier::negate(const expr &e)
 
 expr ExprSimplifier::PushNegations(const expr &e)
 {
-    auto item = pushNegationsCache.find((Z3_ast)e);
+    auto item = pushNegationsCache.find(e);
     if (false && item != pushNegationsCache.end())
     {
         return item->second;
@@ -497,7 +405,7 @@ expr ExprSimplifier::PushNegations(const expr &e)
             }
 
             auto result = dec(arguments);
-            pushNegationsCache.insert({(Z3_ast)e, result});
+            pushNegationsCache.insert({e, result});
             return result;
         }
         else
@@ -511,7 +419,7 @@ expr ExprSimplifier::PushNegations(const expr &e)
                 if (innerDecl.decl_kind() == Z3_OP_NOT)
                 {
                     auto result = PushNegations(notBody.arg(0));
-                    //pushNegationsCache.insert({(Z3_ast)e, result});
+                    //pushNegationsCache.insert({e, result});
                     return result;
                 }
                 else if (innerDecl.decl_kind() == Z3_OP_AND)
@@ -523,7 +431,7 @@ expr ExprSimplifier::PushNegations(const expr &e)
                     }
 
                     auto result = mk_or(arguments);
-                    //pushNegationsCache.insert({(Z3_ast)e, result});
+                    //pushNegationsCache.insert({e, result});
                     return result;
                 }
                 else if (innerDecl.decl_kind() == Z3_OP_OR)
@@ -535,19 +443,19 @@ expr ExprSimplifier::PushNegations(const expr &e)
                     }
 
                     auto result = mk_and(arguments);
-                    //pushNegationsCache.insert({(Z3_ast)e, result});
+                    //pushNegationsCache.insert({e, result});
                     return result;
                 }
                 else if (innerDecl.decl_kind() == Z3_OP_ITE)
                 {
                     auto result = (PushNegations(notBody.arg(0)) && PushNegations(!notBody.arg(1))) || (PushNegations(!notBody.arg(0)) && PushNegations(!notBody.arg(2)));
-                    //pushNegationsCache.insert({(Z3_ast)e, result});
+                    //pushNegationsCache.insert({e, result});
                     return result;
                 }
                 else if (innerDecl.decl_kind() == Z3_OP_IFF)
                 {
                     auto result = (PushNegations(notBody.arg(0)) && PushNegations(!notBody.arg(1))) || (PushNegations(!notBody.arg(0)) && PushNegations(notBody.arg(1)));
-                    //pushNegationsCache.insert({(Z3_ast)e, result});
+                    //pushNegationsCache.insert({e, result});
                     return result;
                 }
                 else if (innerDecl.decl_kind() == Z3_OP_EQ && notBody.arg(0).get_sort().is_bool())
@@ -576,24 +484,24 @@ expr ExprSimplifier::PushNegations(const expr &e)
             {
 
                 auto result = flipQuantifierAndModifyBody(notBody, PushNegations(!notBody.body()));
-                //pushNegationsCache.insert({(Z3_ast)e, result});
+                //pushNegationsCache.insert({e, result});
                 return result;
             }
 
             auto result = e;
-            //pushNegationsCache.insert({(Z3_ast)e, result});
+            //pushNegationsCache.insert({e, result});
             return result;
         }
     }
     if (e.is_quantifier())
     {
 	expr result = modifyQuantifierBody(e, PushNegations(e.body()));
-        pushNegationsCache.insert({(Z3_ast)e, result});
+        pushNegationsCache.insert({e, result});
         return result;
     }
 
     auto result = e;
-    pushNegationsCache.insert({(Z3_ast)e, result});
+    pushNegationsCache.insert({e, result});
     return result;
 }
 
@@ -709,7 +617,7 @@ expr ExprSimplifier::DeCanonizeBoundVariables(const expr &e)
 
 bool ExprSimplifier::isRelevant(const expr &e, int boundVariables, int currentDepth)
 {
-    auto item = isRelevantCache.find(std::make_tuple((Z3_ast)e, boundVariables, currentDepth));
+    auto item = isRelevantCache.find(std::make_tuple(e, boundVariables, currentDepth));
     if (item != isRelevantCache.end())
     {
         return item->second;
@@ -721,7 +629,7 @@ bool ExprSimplifier::isRelevant(const expr &e, int boundVariables, int currentDe
         int deBruijnIndex = Z3_get_index_value(*context, ast);
 
         bool result = (deBruijnIndex - currentDepth) < boundVariables;
-        isRelevantCache.insert({std::make_tuple((Z3_ast)e, boundVariables, currentDepth), result});
+        isRelevantCache.insert({std::make_tuple(e, boundVariables, currentDepth), result});
         return result;
     }
     else if (e.is_app())
@@ -733,12 +641,12 @@ bool ExprSimplifier::isRelevant(const expr &e, int boundVariables, int currentDe
             bool relevant = isRelevant(e.arg(i), boundVariables, currentDepth);
             if (relevant)
             {
-                isRelevantCache.insert({std::make_tuple((Z3_ast)e, boundVariables, currentDepth), true});
+                isRelevantCache.insert({std::make_tuple(e, boundVariables, currentDepth), true});
                 return true;
             }
         }
 
-        isRelevantCache.insert({std::make_tuple((Z3_ast)e, boundVariables, currentDepth), false});
+        isRelevantCache.insert({std::make_tuple(e, boundVariables, currentDepth), false});
         return false;
     }
     else if (e.is_quantifier())
@@ -748,12 +656,12 @@ bool ExprSimplifier::isRelevant(const expr &e, int boundVariables, int currentDe
         int numBound = Z3_get_quantifier_num_bound(*context, ast);
 
         bool result = isRelevant(e.body(), boundVariables, currentDepth + numBound);
-        isRelevantCache.insert({std::make_tuple((Z3_ast)e, boundVariables, currentDepth), result});
+        isRelevantCache.insert({std::make_tuple(e, boundVariables, currentDepth), result});
         return result;
     }
     else
     {
-        isRelevantCache.insert({std::make_tuple((Z3_ast)e, boundVariables, currentDepth), false});
+        isRelevantCache.insert({std::make_tuple(e, boundVariables, currentDepth), false});
         return false;
     }
 }
@@ -859,30 +767,8 @@ void ExprSimplifier::clearCaches()
     reduceDivRemCache.clear();
 }
 
-bool ExprSimplifier::isVar(const expr& e) const
+z3::expr ExprSimplifier::StripToplevelExistentials(const z3::expr& e)
 {
-    if (e.is_var())
-    {
-        return true;
-    }
-
-    if (e.is_app())
-    {
-	func_decl f = e.decl();
-	unsigned num = e.num_args();
-
-	if (num == 0 && f.name() != NULL && !e.is_numeral())
-	{
-	    return true;
-	}
-    }
-
-    return false;
-}
-
-z3::expr ExprSimplifier::StripToplevelExistentials(z3::expr& e)
-{
-    // only for quantifiers on the very top level to keep the overhead minimal
     if (e.is_quantifier())
     {
         Z3_ast ast = (Z3_ast)e;
@@ -915,10 +801,20 @@ z3::expr ExprSimplifier::StripToplevelExistentials(z3::expr& e)
 	    }
 
 	    auto body = e.body();
-	    auto newBody = StripToplevelExistentials(body);
-
-	    return newBody.substitute(currentBound);
+	    return StripToplevelExistentials(body.substitute(currentBound));
 	}
+    } else if (e.is_app() && e.decl().decl_kind() == Z3_OP_AND) {
+	const auto decl = e.decl();
+        const int numArgs = e.num_args();
+
+	expr_vector arguments(*context);
+	for (int i = 0; i < numArgs; i++)
+        {
+            const auto arg = e.arg(i);
+	    arguments.push_back(StripToplevelExistentials(arg));
+        }
+
+	return decl(arguments);
     }
 
     return e;
@@ -926,7 +822,7 @@ z3::expr ExprSimplifier::StripToplevelExistentials(z3::expr& e)
 
 bool ExprSimplifier::isSentence(const z3::expr &e)
 {
-    auto item = isSentenceCache.find((Z3_ast)e);
+    auto item = isSentenceCache.find(e);
     if (item != isSentenceCache.end())
     {
 	return item->second;
@@ -956,12 +852,12 @@ bool ExprSimplifier::isSentence(const z3::expr &e)
 	{
 	    if (!isSentence(e.arg(i)))
 	    {
-		isSentenceCache.insert({(Z3_ast)e, false});
+		isSentenceCache.insert({e, false});
 		return false;
 	    }
 	}
 
-	isSentenceCache.insert({(Z3_ast)e, true});
+	isSentenceCache.insert({e, true});
 	return true;
     }
     else if(e.is_quantifier())
@@ -972,111 +868,9 @@ bool ExprSimplifier::isSentence(const z3::expr &e)
     return true;
 }
 
-void ExprSimplifier::getVariablePolarities(const z3::expr &e, bool isNegative)
-{
-    auto item = processedPolaritiesCache.find({(Z3_ast)e, isNegative});
-    if (item != processedPolaritiesCache.end())
-    {
-	return;
-    }
-
-    if (e.is_const() && !e.is_numeral())
-    {
-	std::string expressionString = e.to_string();
-
-	if (e.get_sort().is_bool())
-	{
-	    if (expressionString == "true" || expressionString == "false")
-	    {
-		return;
-	    }
-
-	    auto polarityIt = variablePolarities.find(expressionString);
-	    if (polarityIt == variablePolarities.end())
-	    {
-		variablePolarities.insert( {expressionString, isNegative ? NEGATIVE : POSITIVE} );
-	    }
-	    else
-	    {
-		auto polarity = polarityIt->second;
-
-		if ((polarity == POSITIVE && isNegative) ||
-		    (polarity == NEGATIVE && !isNegative))
-		{
-		    variablePolarities[expressionString] = BOTH_POLARITIES;
-		}
-	    }
-	}
-    }
-    else if (e.is_app())
-    {
-	func_decl f = e.decl();
-	unsigned num = e.num_args();
-
-	if (f.decl_kind() == Z3_OP_NOT)
-	{
-	    getVariablePolarities(e.arg(0), !isNegative);
-	}
-	else if (f.decl_kind() == Z3_OP_ITE)
-	{
-	    getVariablePolarities(e.arg(0), isNegative);
-	    getVariablePolarities(e.arg(0), !isNegative);
-	    getVariablePolarities(e.arg(1), isNegative);
-	    getVariablePolarities(e.arg(2), isNegative);
-	}
-	else if (f.decl_kind() == Z3_OP_IFF || (f.decl_kind() == Z3_OP_EQ && e.arg(0).get_sort().is_bool()))
-	{
-	    getVariablePolarities(e.arg(0), isNegative);
-	    getVariablePolarities(e.arg(0), !isNegative);
-	    getVariablePolarities(e.arg(1), isNegative);
-	    getVariablePolarities(e.arg(1), !isNegative);
-	}
-	else
-	{
-	    for (unsigned i = 0; i < num; i++)
-	    {
-		getVariablePolarities(e.arg(i), isNegative);
-	    }
-	}
-    }
-    else if(e.is_quantifier())
-    {
-        getVariablePolarities(e.body(), isNegative);
-    }
-
-    processedPolaritiesCache.insert({(Z3_ast)e, isNegative});
-}
-
-z3::expr ExprSimplifier::EliminatePureLiterals(z3::expr &e)
-{
-    processedPolaritiesCache.clear();
-    variablePolarities.clear();
-    getVariablePolarities(e, false);
-
-    z3::expr_vector polaritySubstitutesSrc(*context);
-    z3::expr_vector polaritySubstitutesDst(*context);
-    for (const auto [var, polarity] : variablePolarities)
-    {
-	if (polarity == NEGATIVE || polarity == POSITIVE)
-	{
-	    polaritySubstitutesSrc.push_back(context->bool_const(var.c_str()));
-	    polaritySubstitutesDst.push_back(context->bool_val(polarity == NEGATIVE ? false : true));
-	}
-    }
-
-    if (polaritySubstitutesSrc.size() == 0)
-    {
-	return e;
-    }
-    else
-    {
-	return e.substitute(polaritySubstitutesSrc, polaritySubstitutesDst);
-    }
-}
-
 expr ExprSimplifier::ReduceDivRem(const expr &e)
 {
-    auto item = reduceDivRemCache.find((Z3_ast)e);
+    auto item = reduceDivRemCache.find(e);
     if (item != reduceDivRemCache.end())
     {
 	return item->second;
@@ -1129,4 +923,11 @@ expr ExprSimplifier::ReduceDivRem(const expr &e)
     }
 
     return e;
+}
+
+void ExprSimplifier::ReconstructModel(Model &model)
+{
+    for (auto it = usedPasses.rbegin(); it != usedPasses.rend(); ++it) {
+	(*it)->ReconstructModel(model);
+    }
 }

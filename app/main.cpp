@@ -17,7 +17,7 @@ using namespace std;
 using namespace z3;
 using namespace antlr4;
 
-const std::string version = "1.0";
+const std::string version = "1.1";
 
 void print_usage()
 {
@@ -37,7 +37,6 @@ void print_usage()
     std::cout << "  --simpl:unconstrained       use unconstrained variable simplification [1]" << std::endl;
     std::cout << "  --uc:goal                   take goals of unconstrained variables into account [1]" << std::endl;
     std::cout << "  --bdd:reorder               BDD reorder type (none|win2|win2ite|win3|win3ite|sift|siftite) [sift]" << std::endl;
-    std::cout << "  --bdd:initial-order         initial order of BDD variables (interleave|sequential|heuristic) [heuristic]" << std::endl;
     std::cout << "  --simpl:flip-universal      negate universal formulas [0]" << std::endl;
     std::cout << "  --verbosity                 set level of debugging outputs [0]" << std::endl;
 }
@@ -54,7 +53,6 @@ int main(int argc, char* argv[])
         {"simpl:add-congruences", required_argument, 0, 'C' },
         {"uc:goal", required_argument, 0, 'g' },
 	{"bdd:reorder", required_argument, 0, 'r' },
-	{"bdd:initial-order", required_argument, 0, 'i' },
 	{"simpl:flip-universal", required_argument, 0, 'f' },
 	{"verbosity", required_argument, 0, 'v' },
         {"version", no_argument, 0, 'V' },
@@ -115,21 +113,6 @@ int main(int argc, char* argv[])
 		exit(1);
 	    }
 
-	    break;
-	}
-	case 'i':
-	{
-	    string optionString(optarg);
-
-	    if (optionString == "heuristic") config.initialOrder = HEURISTIC;
-	    else if (optionString == "sequential") config.initialOrder = SEQUENTIAL;
-	    else if (optionString == "interleave") config.initialOrder = INTERLEAVE_ALL;
-	    else
-	    {
-		std::cout << "Invalid initial order type" << std::endl;
-                print_usage();
-		exit(1);
-	    }
 	    break;
 	}
 	case 'm':

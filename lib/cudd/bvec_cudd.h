@@ -6,6 +6,8 @@
 #include <functional>
 #include <fstream>
 #include <vector>
+#include <set>
+#include <algorithm>
 #include <cuddObj.hh>
 #include <iostream>
 
@@ -59,7 +61,7 @@ public:
     bvec_false(Cudd& manager, size_t bitnum);
 
     static Bvec
-    bvec_con(Cudd& manager, size_t bitnum, int val);
+    bvec_con(Cudd& manager, size_t bitnum, unsigned int val);
 
     static Bvec
     bvec_var(Cudd& manager, size_t bitnum, int offset, int step);
@@ -584,7 +586,7 @@ public:
     BDD
     operator!=(const Bvec& other) const { return !(*this == other); }
 
-    unsigned int bddNodes()
+    unsigned int bddNodes() const
     {
         auto count = 0U;
 
@@ -594,6 +596,19 @@ public:
         }
 
         return count;
+    }
+
+    unsigned int supportSize() const
+    {
+        std::set<unsigned int> support;
+	for (const auto &bdd : m_bitvec)
+	{
+            const auto bdd_support = bdd.SupportIndices();
+            std::copy(bdd_support.begin(), bdd_support.end(),
+                        std::inserter(support, support.begin()));
+	}
+
+	return support.size();
     }
 
     bool isPrecise() const

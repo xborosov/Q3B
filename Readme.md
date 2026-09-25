@@ -18,18 +18,22 @@ Q3B-pBBD is a version of Q3B utilizing partial BDDs instead of pairs of BDDs.
 
 ## Requirements
 * ANTLR 4 (for formula parser)
-* Z3 API >= 4.7 (to perform some of simplifications)
+* Z3 API >= 4.11 (for formula representation and to perform some of the
+  simplifications)
 * CUDD BDD library (for BDD operations)
+
+All these requirements can be obtained by running
+```
+bash contrib/get_deps.sh
+```
 
 ## Compilation
 Q3B can be compiled by running
-
 ```
-mkdir build
-cd build
-cmake ..
-make
+cmake -S . -B build
+cmake --build build -j4
 ```
+(or with a different number of threads).
 
 ## Usage
 To process the file `file.smt2` in the SMT-LIB 2.5 format, run
