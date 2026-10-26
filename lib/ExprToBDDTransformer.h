@@ -214,8 +214,6 @@ class ExprToBDDTransformer
     }
     
     void configureTermination();
-
-    void configureTermination();
   
     void PrintModel(const std::map<std::string, std::vector<bool>> &);
     Model GetModel(BDD, BDDType);

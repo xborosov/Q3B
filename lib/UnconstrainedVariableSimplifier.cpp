@@ -7,7 +7,7 @@
 using namespace std;
 using namespace z3;
 
-map<string, int> UnconstrainedVariableSimplifier::countVariableOccurences(expr e, bool isPositive, Goal goal = NONE)
+std::map<string, int> UnconstrainedVariableSimplifier::countVariableOccurences(expr e, bool isPositive, Goal goal = NONE)
 {
     if (e.get_sort().is_bv())
     {
@@ -17,7 +17,7 @@ map<string, int> UnconstrainedVariableSimplifier::countVariableOccurences(expr e
             cacheHits++;
             if (dagCounting)
             {
-                map<string, int> varCounts;
+                std::map<string, int> varCounts;
                 return varCounts;
             }
             else
@@ -27,7 +27,7 @@ map<string, int> UnconstrainedVariableSimplifier::countVariableOccurences(expr e
         }
     }
 
-    map<string, int> varCounts;
+    std::map<string, int> varCounts;
     if (e.is_const() && !e.is_numeral())
     {
 	if (e.get_sort().is_bool())
@@ -1382,14 +1382,14 @@ std::map<std::string, int> UnconstrainedVariableSimplifier::countFormulaVarOccur
     if (e.is_app() && e.decl().decl_kind() == Z3_OP_OR)
     {
 	assert(e.num_args() > 0);
-	auto variableCounts = countVariableOccurences(e.arg(0), true);
+	auto variableCounts = UnconstrainedVariableSimplifier::countVariableOccurences(e.arg(0), true);
 	for(unsigned int i = 1; i < e.num_args(); i++)
 	{
-	    maxCounts(countVariableOccurences(e.arg(i), true), variableCounts);
+	    maxCounts(UnconstrainedVariableSimplifier::countVariableOccurences(e.arg(i), true), variableCounts);
 	}
 	return variableCounts;
     }
 
-    return countVariableOccurences(e, true);
+    return UnconstrainedVariableSimplifier::countVariableOccurences(e, true);
 }
 
